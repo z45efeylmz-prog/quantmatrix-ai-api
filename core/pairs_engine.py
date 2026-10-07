@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional
 from scipy.stats import linregress
 from statsmodels.tsa.stattools import adfuller
 
+from concurrent.futures import ThreadPoolExecutor
 from core.binance_data import BinanceDataClient
 
 class KalmanFilter:
@@ -58,6 +59,8 @@ class PairsArbitrageEngine:
 
     def __init__(self, data_client: Optional[BinanceDataClient] = None):
         self.data_client = data_client or BinanceDataClient()
+        self._scan_cache: List[Dict[str, Any]] = []
+        self._scan_cache_time: float = 0.0
 
     def fit_ornstein_uhlenbeck(self, spread: np.ndarray) -> Dict[str, Any]:
         """Fits Ornstein-Uhlenbeck process dX_t = theta*(mu - X_t)*dt + sigma*dW_t"""
@@ -211,11 +214,25 @@ class PairsArbitrageEngine:
         }
 
     def scan_all_pairs(self) -> List[Dict[str, Any]]:
-        """Scans all institutional candidate pairs and returns active opportunities."""
-        results = []
-        for p in self.CANDIDATE_PAIRS:
-            res = self.analyze_pair(p["asset_a"], p["asset_b"])
-            if "error" not in res:
-                res["sector"] = p.get("sector", "Crypto")
-                results.append(res)
+        """Scans all institutional candidate pairs in parallel with caching."""
+        now = time.time()
+        if self._scan_cache and (now - self._scan_cache_time < 25):
+            return self._scan_cache
+
+        def _scan_single(p):
+            try:
+                res = self.analyze_pair(p["asset_a"], p["asset_b"])
+                if "error" not in res:
+                    res["sector"] = p.get("sector", "Crypto")
+                    return res
+            except Exception:
+                pass
+            return None
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(filter(None, pool.map(_scan_single, self.CANDIDATE_PAIRS)))
+
+        if results:
+            self._scan_cache = results
+            self._scan_cache_time = now
         return results
