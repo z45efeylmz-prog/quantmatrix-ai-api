@@ -82,7 +82,7 @@ class BinanceDataClient:
         url = f"{BASE_URL}/fapi/v1/ticker/24hr"
         params = {"symbol": symbol.upper()} if symbol else {}
         try:
-            r = requests.get(url, params=params, timeout=4)
+            r = self.session.get(url, params=params, timeout=4)
             if r.status_code == 200:
                 return r.json()
         except Exception:
@@ -94,7 +94,7 @@ class BinanceDataClient:
         sym = symbol.upper()
         url = f"{BASE_URL}/fapi/v1/openInterest"
         try:
-            r = requests.get(url, params={"symbol": sym}, timeout=4)
+            r = self.session.get(url, params={"symbol": sym}, timeout=4)
             if r.status_code == 200:
                 return r.json()
         except Exception:
