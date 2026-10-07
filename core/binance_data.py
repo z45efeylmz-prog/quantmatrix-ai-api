@@ -45,8 +45,9 @@ class BinanceDataClient:
         sym = symbol.upper()
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         urls = [
+            ("https://data-api.binance.vision/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit}),
             (f"{BASE_URL}/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit}),
-            (f"https://api.binance.com/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
+            ("https://api.binance.com/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
         ]
         for url, params in urls:
             try:
