@@ -16,6 +16,9 @@ class BinanceDataClient:
         self._funding_cache: Dict[str, float] = {}
         self._funding_cache_time: float = 0.0
         self._cache_ttl: float = 30.0  # 30s cache
+        self._candle_cache: Dict[str, Any] = {}
+        self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
 
     def get_funding_rates(self) -> Dict[str, float]:
         """Fetches and caches Binance Futures 8h funding rates"""
@@ -25,7 +28,7 @@ class BinanceDataClient:
 
         rates = {}
         try:
-            resp = requests.get(f"{BASE_URL}/fapi/v1/premiumIndex", timeout=4)
+            resp = self.session.get(f"{BASE_URL}/fapi/v1/premiumIndex", timeout=3)
             if resp.status_code == 200:
                 for item in resp.json():
                     sym = item.get("symbol")
@@ -40,18 +43,23 @@ class BinanceDataClient:
             self._funding_cache_time = now
         return self._funding_cache
 
-    def get_recent_candles(self, symbol: str, interval: str = "1h", limit: int = 100) -> pd.DataFrame:
-        """Fetches OHLCV candles from Binance Futures (with Spot fallback)"""
+    def get_recent_candles(self, symbol: str, interval: str = "1h", limit: int = 60) -> pd.DataFrame:
+        """Fetches OHLCV candles with 15s caching and fast Keep-Alive pooling"""
         sym = symbol.upper()
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        cache_key = f"{sym}_{interval}"
+        now = time.time()
+        if cache_key in self._candle_cache:
+            c_time, c_df = self._candle_cache[cache_key]
+            if now - c_time < 15.0:
+                return c_df.copy()
+
         urls = [
             ("https://data-api.binance.vision/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit}),
-            (f"{BASE_URL}/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit}),
-            ("https://api.binance.com/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
+            (f"{BASE_URL}/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit})
         ]
         for url, params in urls:
             try:
-                r = requests.get(url, params=params, headers=headers, timeout=5)
+                r = self.session.get(url, params=params, timeout=3)
                 if r.status_code == 200:
                     raw = r.json()
                     if raw and isinstance(raw, list) and len(raw) >= 10:
@@ -63,6 +71,7 @@ class BinanceDataClient:
                         for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]:
                             df[col] = df[col].astype(float)
                         df["timestamp"] = df["timestamp"].astype(int)
+                        self._candle_cache[cache_key] = (now, df)
                         return df
             except Exception:
                 pass
