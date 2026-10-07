@@ -41,27 +41,30 @@ class BinanceDataClient:
         return self._funding_cache
 
     def get_recent_candles(self, symbol: str, interval: str = "1h", limit: int = 100) -> pd.DataFrame:
-        """Fetches OHLCV candles from Binance Futures"""
+        """Fetches OHLCV candles from Binance Futures (with Spot fallback)"""
         sym = symbol.upper()
-        url = f"{BASE_URL}/fapi/v1/klines"
-        params = {"symbol": sym, "interval": interval, "limit": limit}
-        try:
-            r = requests.get(url, params=params, timeout=5)
-            if r.status_code == 200:
-                raw = r.json()
-                if not raw or not isinstance(raw, list):
-                    return pd.DataFrame()
-                df = pd.DataFrame(raw, columns=[
-                    "timestamp", "open", "high", "low", "close", "volume",
-                    "close_time", "quote_volume", "trades", "taker_buy_base",
-                    "taker_buy_quote", "ignore"
-                ])
-                for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]:
-                    df[col] = df[col].astype(float)
-                df["timestamp"] = df["timestamp"].astype(int)
-                return df
-        except Exception:
-            pass
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        urls = [
+            (f"{BASE_URL}/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit}),
+            (f"https://api.binance.com/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
+        ]
+        for url, params in urls:
+            try:
+                r = requests.get(url, params=params, headers=headers, timeout=5)
+                if r.status_code == 200:
+                    raw = r.json()
+                    if raw and isinstance(raw, list) and len(raw) >= 10:
+                        df = pd.DataFrame(raw, columns=[
+                            "timestamp", "open", "high", "low", "close", "volume",
+                            "close_time", "quote_volume", "trades", "taker_buy_base",
+                            "taker_buy_quote", "ignore"
+                        ])
+                        for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_base"]:
+                            df[col] = df[col].astype(float)
+                        df["timestamp"] = df["timestamp"].astype(int)
+                        return df
+            except Exception:
+                pass
         return pd.DataFrame()
 
     def get_ticker_24h(self, symbol: Optional[str] = None) -> Any:
