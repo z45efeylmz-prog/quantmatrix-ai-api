@@ -54,12 +54,13 @@ class BinanceDataClient:
                 return c_df.copy()
 
         urls = [
-            ("https://data-api.binance.vision/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit}),
-            (f"{BASE_URL}/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit})
+            ("https://fapi.binance.com/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit}),
+            ("https://api.binance.com/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit}),
+            ("https://data-api.binance.vision/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
         ]
         for url, params in urls:
             try:
-                r = self.session.get(url, params=params, timeout=3)
+                r = self.session.get(url, params=params, timeout=8)
                 if r.status_code == 200:
                     raw = r.json()
                     if raw and isinstance(raw, list) and len(raw) >= 10:
