@@ -92,7 +92,13 @@ async def get_directional_signals(
     if symbol:
         res = directional_engine.generate_directional_signal(symbol)
         if "error" in res:
-            raise HTTPException(status_code=400, detail=res["error"])
+            return {
+                "success": False,
+                "symbol": symbol.upper(),
+                "error": res["error"],
+                "message": f"Symbol '{symbol.upper()}' could not be processed. Please provide a valid Binance Futures ticker (e.g., BTCUSDT, ETHUSDT, SOLUSDT).",
+                "timestamp": int(time.time())
+            }
         return res
 
     # Multi-asset batch scan
@@ -167,7 +173,14 @@ async def analyze_custom_pair(
     """
     res = pairs_engine.analyze_pair(asset_a, asset_b)
     if "error" in res:
-        raise HTTPException(status_code=400, detail=res["error"])
+        return {
+            "success": False,
+            "asset_a": asset_a.upper(),
+            "asset_b": asset_b.upper(),
+            "error": res["error"],
+            "message": "Failed to analyze pair. Ensure both symbols exist on Binance Futures with sufficient history.",
+            "timestamp": int(time.time())
+        }
     return res
 
 # ─────────────────────────────────────────────────────────────
@@ -212,7 +225,13 @@ async def get_volatility(
     """
     res = volatility_engine.analyze_volatility(symbol)
     if "error" in res:
-        raise HTTPException(status_code=400, detail=res["error"])
+        return {
+            "success": False,
+            "symbol": symbol.upper(),
+            "error": res["error"],
+            "message": "Failed to compute volatility metrics. Check symbol formatting.",
+            "timestamp": int(time.time())
+        }
     return res
 
 if __name__ == "__main__":
