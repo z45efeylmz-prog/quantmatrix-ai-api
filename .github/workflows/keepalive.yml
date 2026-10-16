@@ -1,0 +1,14 @@
+name: Render 24/7 Keep-Alive Sentinel
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping QuantMatrix AI API
+        run: |
+          curl -s -S -o /dev/null -w "HTTP: %{http_code} | Latency: %{time_total}s\n" https://quantmatrix-ai-api.onrender.com/health
