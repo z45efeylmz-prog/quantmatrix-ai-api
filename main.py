@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,33 +61,48 @@ CACHE = {
     "batch_signals": None,
     "pairs_scan": None,
     "volatility": {},
+    "regime": {},
     "microstructure": {},
     "last_warm": 0
 }
 CACHE_LOCK = threading.Lock()
 
-def prewarm_cache_worker():
-    """Background worker that continuously pre-calculates and warms top signals every 45s."""
+def prewarm_directional_worker():
+    """Background worker that continuously pre-calculates directional signals in parallel every 30s."""
     top_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT", "SUIUSDT", "NEARUSDT", "LINKUSDT"]
     while True:
         try:
-            # 1. Warm directional signals
             batch = []
-            for sym in top_symbols:
-                sig = directional_engine.generate_directional_signal(sym)
-                if "error" not in sig:
-                    with CACHE_LOCK:
-                        CACHE["directional"][sym] = sig
-                    batch.append(sig)
-            with CACHE_LOCK:
-                CACHE["batch_signals"] = {
-                    "count": len(batch),
-                    "signals": batch,
-                    "timestamp": int(time.time()),
-                    "cached": True
-                }
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                future_to_sym = {executor.submit(directional_engine.generate_directional_signal, sym): sym for sym in top_symbols}
+                for future in as_completed(future_to_sym):
+                    sym = future_to_sym[future]
+                    try:
+                        sig = future.result()
+                        if "error" not in sig:
+                            with CACHE_LOCK:
+                                CACHE["directional"][sym] = sig
+                            batch.append(sig)
+                    except Exception:
+                        pass
+            
+            if batch:
+                with CACHE_LOCK:
+                    CACHE["batch_signals"] = {
+                        "count": len(batch),
+                        "signals": batch,
+                        "timestamp": int(time.time()),
+                        "cached": True
+                    }
+                    CACHE["last_warm"] = int(time.time())
+        except Exception:
+            pass
+        time.sleep(30)
 
-            # 2. Warm pairs arbitrage
+def prewarm_pairs_worker():
+    """Background worker for pairs arbitrage scanning (runs independently every 60s)."""
+    while True:
+        try:
             pairs = pairs_engine.scan_all_pairs()
             active_opps = [p for p in pairs if p.get("decision") in ("ENTER_ARBITRAGE", "TARGET_REACHED_TP")]
             with CACHE_LOCK:
@@ -98,15 +114,13 @@ def prewarm_cache_worker():
                     "timestamp": int(time.time()),
                     "cached": True
                 }
-            with CACHE_LOCK:
-                CACHE["last_warm"] = int(time.time())
-        except Exception as e:
+        except Exception:
             pass
-        time.sleep(45)
+        time.sleep(60)
 
-# Spawn worker thread upon startup
-cache_thread = threading.Thread(target=prewarm_cache_worker, daemon=True)
-cache_thread.start()
+# Spawn worker threads upon startup
+threading.Thread(target=prewarm_directional_worker, daemon=True).start()
+threading.Thread(target=prewarm_pairs_worker, daemon=True).start()
 
 
 @app.get("/", summary="API Root & Status")
@@ -159,7 +173,7 @@ async def get_directional_signals(
     if symbol:
         sym = symbol.upper()
         with CACHE_LOCK:
-            if sym in CACHE["directional"] and (time.time() - CACHE["last_warm"] < 120):
+            if sym in CACHE["directional"]:
                 return CACHE["directional"][sym]
                 
         res = directional_engine.generate_directional_signal(sym)
@@ -176,20 +190,28 @@ async def get_directional_signals(
         return res
 
     with CACHE_LOCK:
-        if CACHE["batch_signals"] and (time.time() - CACHE["last_warm"] < 120):
+        if CACHE["batch_signals"]:
             return CACHE["batch_signals"]
 
-    # Fallback multi-asset batch scan
+    # Fallback multi-asset batch scan using fast parallel threads
     results = []
-    for s in directional_engine.DEFAULT_SYMBOLS[:8]:
-        sig = directional_engine.generate_directional_signal(s)
-        if "error" not in sig:
-            results.append(sig)
-    return {
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(directional_engine.generate_directional_signal, s) for s in directional_engine.DEFAULT_SYMBOLS[:8]]
+        for f in as_completed(futures):
+            try:
+                sig = f.result()
+                if "error" not in sig:
+                    results.append(sig)
+            except Exception:
+                pass
+    fallback_res = {
         "count": len(results),
         "signals": results,
         "timestamp": int(time.time())
     }
+    with CACHE_LOCK:
+        CACHE["batch_signals"] = fallback_res
+    return fallback_res
 
 @app.get("/api/v1/signals/plan", summary="AI Trade Execution Plan (Entry, Stops, Leverage, R:R)")
 async def get_trade_plan(
@@ -271,7 +293,16 @@ async def get_liquidation_radar():
 async def get_market_regime(
     symbol: str = Query("BTCUSDT", description="Symbol to classify (default: BTCUSDT)")
 ):
-    return directional_engine.detect_market_regime(symbol)
+    sym = symbol.upper()
+    with CACHE_LOCK:
+        if sym in CACHE["regime"] and (time.time() - CACHE["regime"][sym].get("_cached_at", 0) < 60):
+            return CACHE["regime"][sym]
+    res = directional_engine.detect_market_regime(sym)
+    if isinstance(res, dict) and "error" not in res:
+        res["_cached_at"] = time.time()
+        with CACHE_LOCK:
+            CACHE["regime"][sym] = res
+    return res
 
 @app.get("/api/v1/signals/wick-sniper", summary="Flash-Crash Oversold Dip Alerts")
 async def get_wick_sniper():
@@ -350,6 +381,9 @@ async def get_volatility(
     symbol: str = Query("BTCUSDT", description="Crypto symbol (e.g. BTCUSDT, SOLUSDT)")
 ):
     sym = symbol.upper()
+    with CACHE_LOCK:
+        if sym in CACHE["volatility"] and (time.time() - CACHE["volatility"][sym].get("_cached_at", 0) < 60):
+            return CACHE["volatility"][sym]
     res = volatility_engine.analyze_volatility(sym)
     if "error" in res:
         return {
@@ -359,6 +393,9 @@ async def get_volatility(
             "message": "Failed to compute volatility metrics. Check symbol formatting.",
             "timestamp": int(time.time())
         }
+    res["_cached_at"] = time.time()
+    with CACHE_LOCK:
+        CACHE["volatility"][sym] = res
     return res
 
 if __name__ == "__main__":
