@@ -6,6 +6,7 @@ Dynamic ATR Asymmetric Stops, Market Regime Classifier, and Flash-Crash Wick Sni
 """
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -211,19 +212,15 @@ class DirectionalQuantEngine:
             "timestamp": int(time.time())
         }
 
-    def scan_wick_sniper(self, symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Monitors for flash-crash dips: 1m drop >= 4% and RSI < 18 (Liquidation Cascades)"""
-        sym_list = symbols or self.DEFAULT_SYMBOLS[:8]
-        alerts = []
-        for sym in sym_list:
+    def _check_single_wick(self, sym: str) -> Optional[Dict[str, Any]]:
+        try:
             df = self.data_client.get_recent_candles(sym, interval="5m", limit=30)
             if len(df) < 15:
-                continue
+                return None
             close = df["close"].values
             open_p = df["open"].values
             last_change_pct = (close[-1] - open_p[-1]) / open_p[-1] * 100
 
-            # 5m RSI
             deltas = np.diff(close)
             gains = np.maximum(deltas, 0)
             losses = np.abs(np.minimum(deltas, 0))
@@ -233,7 +230,7 @@ class DirectionalQuantEngine:
                 rsi = 100.0 - (100.0 / (1.0 + rs))
 
             if last_change_pct <= -3.5 or rsi <= 20.0:
-                alerts.append({
+                return {
                     "symbol": sym,
                     "event": "FLASH_DIP_OPPORTUNITY",
                     "candle_drop_pct": round(float(last_change_pct), 2),
@@ -242,5 +239,22 @@ class DirectionalQuantEngine:
                     "strategy": "OVERSOLD_REBOUND_DIP_BUY",
                     "target_bounce_pct": 1.5,
                     "timestamp": int(time.time())
-                })
+                }
+        except Exception:
+            pass
+        return None
+
+    def scan_wick_sniper(self, symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """Monitors for flash-crash dips in parallel using high-speed worker pool"""
+        sym_list = symbols or self.DEFAULT_SYMBOLS[:8]
+        alerts = []
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(self._check_single_wick, sym) for sym in sym_list]
+            for f in as_completed(futures):
+                try:
+                    res = f.result()
+                    if res:
+                        alerts.append(res)
+                except Exception:
+                    pass
         return alerts

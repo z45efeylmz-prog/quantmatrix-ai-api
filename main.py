@@ -63,12 +63,14 @@ CACHE = {
     "volatility": {},
     "regime": {},
     "microstructure": {},
+    "liquidation_radar": None,
+    "wick_sniper": None,
     "last_warm": 0
 }
 CACHE_LOCK = threading.Lock()
 
 def prewarm_directional_worker():
-    """Background worker that continuously pre-calculates directional signals in parallel every 30s."""
+    """Background worker that continuously pre-calculates directional signals in parallel every 25s."""
     top_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "AVAXUSDT", "SUIUSDT", "NEARUSDT", "LINKUSDT"]
     while True:
         try:
@@ -95,9 +97,55 @@ def prewarm_directional_worker():
                         "cached": True
                     }
                     CACHE["last_warm"] = int(time.time())
+
+            # Pre-warm Wick Sniper alerts
+            try:
+                alerts = directional_engine.scan_wick_sniper()
+                with CACHE_LOCK:
+                    CACHE["wick_sniper"] = {
+                        "count": len(alerts),
+                        "alerts": alerts,
+                        "timestamp": int(time.time()),
+                        "cached": True
+                    }
+            except Exception:
+                pass
+
+            # Pre-warm Liquidation Radar
+            try:
+                funding_map = data_client.get_funding_rates()
+                squeeze_targets = []
+                for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT", "SUIUSDT", "DOGEUSDT"]:
+                    fr = funding_map.get(sym, 0.0)
+                    tr = data_client.get_taker_volume_ratio(sym)
+                    if fr < -0.0002 and tr > 1.10:
+                        squeeze_targets.append({
+                            "symbol": sym,
+                            "squeeze_type": "SHORT_SQUEEZE_HUNT",
+                            "funding_8h": round(fr * 100, 4),
+                            "taker_buy_pressure": tr,
+                            "urgency": "HIGH"
+                        })
+                    elif fr > 0.0005 and tr < 0.90:
+                        squeeze_targets.append({
+                            "symbol": sym,
+                            "squeeze_type": "LONG_FLUSH_HUNT",
+                            "funding_8h": round(fr * 100, 4),
+                            "taker_buy_pressure": tr,
+                            "urgency": "HIGH"
+                        })
+                with CACHE_LOCK:
+                    CACHE["liquidation_radar"] = {
+                        "count": len(squeeze_targets),
+                        "targets": squeeze_targets if squeeze_targets else [{"status": "No extreme squeeze detected at this moment. Market is balanced."}],
+                        "timestamp": int(time.time()),
+                        "cached": True
+                    }
+            except Exception:
+                pass
         except Exception:
             pass
-        time.sleep(30)
+        time.sleep(25)
 
 def prewarm_pairs_worker():
     """Background worker for pairs arbitrage scanning (runs independently every 60s)."""
@@ -258,15 +306,17 @@ async def get_trade_plan(
 async def get_liquidation_radar():
     """
     Scans crypto assets experiencing high funding rate imbalances and extreme order flow pressure,
-    identifying high-probability Short/Long Squeeze liquidation targets.
+    identifying high-probability Short/Long Squeeze liquidation targets (Sub-50ms Cached).
     """
+    with CACHE_LOCK:
+        if CACHE.get("liquidation_radar"):
+            return CACHE["liquidation_radar"]
+
     funding_map = data_client.get_funding_rates()
     squeeze_targets = []
     for sym in ["BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT", "NEARUSDT", "SUIUSDT", "DOGEUSDT"]:
         fr = funding_map.get(sym, 0.0)
         tr = data_client.get_taker_volume_ratio(sym)
-        
-        # High negative funding with aggressive buying -> Short Squeeze
         if fr < -0.0002 and tr > 1.10:
             squeeze_targets.append({
                 "symbol": sym,
@@ -280,14 +330,18 @@ async def get_liquidation_radar():
                 "symbol": sym,
                 "squeeze_type": "LONG_FLUSH_HUNT",
                 "funding_8h": round(fr * 100, 4),
-                "taker_buy_pressure": tr,
+                "taker_sell_pressure": tr,
                 "urgency": "HIGH"
             })
-    return {
+    res = {
         "count": len(squeeze_targets),
         "targets": squeeze_targets if squeeze_targets else [{"status": "No extreme squeeze detected at this moment. Market is balanced."}],
-        "timestamp": int(time.time())
+        "timestamp": int(time.time()),
+        "cached": False
     }
+    with CACHE_LOCK:
+        CACHE["liquidation_radar"] = res
+    return res
 
 @app.get("/api/v1/signals/regime", summary="Market Regime Classification")
 async def get_market_regime(
@@ -306,12 +360,19 @@ async def get_market_regime(
 
 @app.get("/api/v1/signals/wick-sniper", summary="Flash-Crash Oversold Dip Alerts")
 async def get_wick_sniper():
+    with CACHE_LOCK:
+        if CACHE.get("wick_sniper"):
+            return CACHE["wick_sniper"]
     alerts = directional_engine.scan_wick_sniper()
-    return {
+    res = {
         "count": len(alerts),
         "alerts": alerts,
-        "timestamp": int(time.time())
+        "timestamp": int(time.time()),
+        "cached": False
     }
+    with CACHE_LOCK:
+        CACHE["wick_sniper"] = res
+    return res
 
 # ─────────────────────────────────────────────────────────────
 # 2. STATISTICAL PAIRS ARBITRAGE

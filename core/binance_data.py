@@ -17,6 +17,8 @@ class BinanceDataClient:
         self._funding_cache_time: float = 0.0
         self._cache_ttl: float = 30.0  # 30s cache
         self._candle_cache: Dict[str, Any] = {}
+        self._taker_cache: Dict[str, float] = {}
+        self._taker_cache_time: Dict[str, float] = {}
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
 
@@ -103,15 +105,22 @@ class BinanceDataClient:
         return {"symbol": sym, "openInterest": "0", "time": int(time.time() * 1000)}
 
     def get_taker_volume_ratio(self, symbol: str, period: str = "1h", limit: int = 1) -> float:
-        """Fetches taker buy/sell volume ratio (CVD indicator)"""
+        """Fetches taker buy/sell volume ratio (CVD indicator) with Keep-Alive pooling & 30s caching"""
         sym = symbol.upper()
+        now = time.time()
+        if sym in self._taker_cache and (now - self._taker_cache_time.get(sym, 0) < self._cache_ttl):
+            return self._taker_cache[sym]
+
         url = f"{BASE_URL}/futures/data/takerlongshortRatio"
         try:
-            r = requests.get(url, params={"symbol": sym, "period": period, "limit": limit}, timeout=4)
+            r = self.session.get(url, params={"symbol": sym, "period": period, "limit": limit}, timeout=3)
             if r.status_code == 200:
                 data = r.json()
                 if data and isinstance(data, list):
-                    return float(data[-1].get("buySellRatio", 1.0))
+                    ratio = float(data[-1].get("buySellRatio", 1.0))
+                    self._taker_cache[sym] = ratio
+                    self._taker_cache_time[sym] = now
+                    return ratio
         except Exception:
             pass
-        return 1.0
+        return self._taker_cache.get(sym, 1.0)
