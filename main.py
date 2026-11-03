@@ -24,6 +24,7 @@ from core.binance_data import BinanceDataClient
 from core.pairs_engine import PairsArbitrageEngine
 from core.directional_engine import DirectionalQuantEngine
 from core.volatility_engine import VolatilityEngine
+from core.smc_engine import SMCLiquidityEngine
 
 app = FastAPI(
     title="QuantMatrix AI: Institutional Crypto Intelligence API",
@@ -52,6 +53,7 @@ data_client = BinanceDataClient()
 pairs_engine = PairsArbitrageEngine(data_client=data_client)
 directional_engine = DirectionalQuantEngine(data_client=data_client)
 volatility_engine = VolatilityEngine(data_client=data_client)
+smc_engine = SMCLiquidityEngine(data_client=data_client)
 
 # ─────────────────────────────────────────────────────────────
 # HIGH-SPEED IN-MEMORY CACHE (Sub-150ms Response Time)
@@ -65,6 +67,7 @@ CACHE = {
     "microstructure": {},
     "liquidation_radar": None,
     "wick_sniper": None,
+    "smc_scan": None,
     "last_warm": 0
 }
 CACHE_LOCK = threading.Lock()
@@ -143,6 +146,14 @@ def prewarm_directional_worker():
                     }
             except Exception:
                 pass
+
+            # Pre-warm SMC Liquidity Sweep Radar
+            try:
+                smc_res = smc_engine.scan_all_symbols()
+                with CACHE_LOCK:
+                    CACHE["smc_scan"] = smc_res
+            except Exception:
+                pass
         except Exception:
             pass
         time.sleep(25)
@@ -183,6 +194,7 @@ async def root():
         "endpoints": {
             "directional_signals": "/api/v1/signals/directional?symbol=BTCUSDT",
             "ai_trading_plan": "/api/v1/signals/plan?symbol=BTCUSDT",
+            "smc_liquidity_radar": "/api/v1/signals/smc-liquidity?symbol=APTUSDT",
             "liquidation_radar": "/api/v1/signals/liquidation-radar",
             "market_regime": "/api/v1/signals/regime?symbol=BTCUSDT",
             "wick_sniper_dips": "/api/v1/signals/wick-sniper",
@@ -372,6 +384,31 @@ async def get_wick_sniper():
     }
     with CACHE_LOCK:
         CACHE["wick_sniper"] = res
+    return res
+
+@app.get("/api/v1/signals/smc-liquidity", summary="Institutional SMC Liquidity Sweep & SFP Radar")
+async def get_smc_liquidity_signals(
+    symbol: Optional[str] = Query(None, description="Optional symbol (e.g. APTUSDT, DOGEUSDT, SOLUSDT). If omitted, returns live scan of Top 20 liquid cryptos.")
+):
+    """
+    Institutional Smart Money Concepts (SMC) & Swing Failure Pattern (SFP) Liquidity Radar.
+    Detects:
+    - 12-bar Pivot High/Low Liquidity Sweeps
+    - False breakout stop-runs with >35% wick rejection
+    - 50% Consequent Encroachment (CE) wick retest confirmation
+    - Multi-Gate institutional execution score (0-100)
+    - Turnkey trade plan with tight invalidation and asymmetric 3.5R target
+    """
+    if symbol:
+        return smc_engine.analyze_symbol(symbol.upper())
+    
+    with CACHE_LOCK:
+        if CACHE.get("smc_scan"):
+            return CACHE["smc_scan"]
+            
+    res = smc_engine.scan_all_symbols()
+    with CACHE_LOCK:
+        CACHE["smc_scan"] = res
     return res
 
 # ─────────────────────────────────────────────────────────────
