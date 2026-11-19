@@ -177,9 +177,10 @@ def prewarm_pairs_worker():
             pass
         time.sleep(60)
 
-# Spawn worker threads upon startup
-threading.Thread(target=prewarm_directional_worker, daemon=True).start()
-threading.Thread(target=prewarm_pairs_worker, daemon=True).start()
+# Spawn worker threads upon startup (skip infinite loops in serverless Vercel)
+if not os.getenv("VERCEL"):
+    threading.Thread(target=prewarm_directional_worker, daemon=True).start()
+    threading.Thread(target=prewarm_pairs_worker, daemon=True).start()
 
 
 @app.get("/", summary="API Root & Status")
