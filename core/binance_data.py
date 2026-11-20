@@ -4,6 +4,7 @@ High-speed cached market data client for Binance USDT-M Futures.
 Fetches real-time candles, funding rates, open interest, and taker buy/sell ratios.
 """
 
+import os
 import time
 import requests
 from typing import Dict, Any, List, Optional
@@ -52,17 +53,17 @@ class BinanceDataClient:
         now = time.time()
         if cache_key in self._candle_cache:
             c_time, c_df = self._candle_cache[cache_key]
-            if now - c_time < 15.0:
+            if now - c_time < 30.0:
                 return c_df.copy()
 
-        urls = [
-            ("https://fapi.binance.com/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit}),
-            ("https://api.binance.com/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit}),
-            ("https://data-api.binance.vision/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
-        ]
+        vision = ("https://data-api.binance.vision/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
+        fapi = ("https://fapi.binance.com/fapi/v1/klines", {"symbol": sym, "interval": interval, "limit": limit})
+        spot = ("https://api.binance.com/api/v3/klines", {"symbol": sym, "interval": interval, "limit": limit})
+        # Vercel runs in US regions where fapi/api.binance.com may return 451/timeout; try binance.vision first
+        urls = [vision, fapi, spot] if os.environ.get("VERCEL") else [fapi, spot, vision]
         for url, params in urls:
             try:
-                r = self.session.get(url, params=params, timeout=8)
+                r = self.session.get(url, params=params, timeout=3)
                 if r.status_code == 200:
                     raw = r.json()
                     if raw and isinstance(raw, list) and len(raw) >= 10:
